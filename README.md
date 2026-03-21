@@ -33,7 +33,7 @@ Installation & Launch
 Clone the repository:
 
 Bash
-git clone https://github.com/yourusername/DicomFlowRouter.git
+git clone https://github.com/DevByBandesz/DicomFlowRouter.git
 cd DicomFlowRouter/examples/01-SimpleSendwithRetry
 Start the environment:
 

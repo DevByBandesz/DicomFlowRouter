@@ -1,0 +1,79 @@
+name: 01-SimpleSendwithRetry
+
+services:
+  # --- INFRASTRUCTURE: TEST ENDPOINTS ---
+
+  # 1. Sender Pacs
+  orthanc-sender:
+    image: jodogne/orthanc-plugins:latest
+    container_name: dcm_sender_node
+    networks:
+      - dicom-net
+    ports:
+      - "8041:8042"
+    volumes:
+      # load settings json 
+      - ./orthanc/sender/orthanc.json:/etc/orthanc/orthanc.json:ro
+    restart: always
+
+  # 2. Receiver Pacs
+  orthanc-receiver:
+    image: jodogne/orthanc-plugins:latest
+    container_name: dcm_receiver_node
+    networks:
+      - dicom-net
+    ports:
+      - "8042:8042"
+    volumes:
+      - ./orthanc/receiver/orthanc.json:/etc/orthanc/orthanc.json:ro
+    restart: unless-stopped
+
+  # --- ROUTING LOGIC ---
+
+  # 3. DICOMrouter
+  dcm-receiver:
+    build:
+      context: ../../               # project root
+      dockerfile: docker/Dockerfile 
+    image: dicom-flow-router:v1.0
+    container_name: dcm_receiver
+    volumes:
+      - ./router:/app/Working       # router config
+    networks:
+      - dicom-net
+    ports:
+      - "11112:11112"               # Host port is not required
+    restart: unless-stopped
+    
+  # 4. retry_sender
+  dcm-retry:
+    image: dicom-flow-router:v1.0
+    container_name: dcm_retry
+    volumes:
+      - ./router:/app/Working
+    networks:
+      - dicom-net
+    entrypoint: ["tail", "-f", "/dev/null"] # Just stays alive for the scheduler
+    environment:
+      - PYTHONUNBUFFERED=1
+    labels:
+      - "ofelia.enabled=true"
+      - "ofelia.job-exec.dicom-retry-job.schedule=@every 1m"
+      - "ofelia.job-exec.dicom-retry-job.command=python retry_sender.py --working-dir /app/Working"
+
+  # 5. Scheduler (Ofelia)
+  scheduler:
+    image: mcuadros/ofelia:latest
+    container_name: dcm_scheduler
+    depends_on:
+      - dcm-retry
+    networks:
+      - dicom-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: daemon --docker
+    restart: always
+
+networks:
+  dicom-net:
+    driver: bridge

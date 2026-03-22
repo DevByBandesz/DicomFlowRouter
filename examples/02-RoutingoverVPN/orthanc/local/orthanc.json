@@ -1,0 +1,6 @@
+{
+  "Name" : "TARGET_PACS",
+  "DicomAet" : "TARGET_AET",
+  "RemoteAccessAllowed" : true,
+  "AuthenticationEnabled" : false
+}

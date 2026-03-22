@@ -1,0 +1,141 @@
+name: 02-RoutingoverVPN
+
+services:
+  # --- SITE-A (Internal LAN 172.20.0.0/24) ---
+  
+  pacs-sender-a:
+    image: jodogne/orthanc-plugins:latest
+    container_name: dcm_sender_a
+    networks:
+      site-a-net:
+        aliases: [pacs-sender.site-a]
+    ports:
+      - "8041:8042"
+    volumes: ["./orthanc/sender/orthanc.json:/etc/orthanc/orthanc.json:ro"]
+    restart: always
+
+  pacs-local-a:
+    image: jodogne/orthanc-plugins:latest
+    container_name: dcm_pacs_a
+    networks:
+      site-a-net:
+        aliases: [pacs.site-a]
+    ports:
+      - "8042:8042"
+    volumes: ["./orthanc/local/orthanc.json:/etc/orthanc/orthanc.json:ro"]
+    restart: unless-stopped
+
+  dcm-router:
+    build:
+      context: ../../               # project root
+      dockerfile: docker/Dockerfile 
+    image: dicom-flow-router:v1.0
+    container_name: dcm_router
+    networks:
+      - site-a-net
+    environment:
+      - TZ=Europe/Budapest
+    extra_hosts:
+      - "pacs.site-b:10.50.0.2" # Manual DNS resolve over VPN
+    volumes: 
+      - ./router:/app/Working
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    cap_add: [NET_ADMIN]
+    # Route Site-B traffic specifically through our Gateway container
+    entrypoint: >
+      sh -c "apt-get update && apt-get install -y iproute2 && 
+             ip route add 10.50.0.0/24 via 172.20.0.254 && 
+             python storescp_router.py"
+
+  dcm-retry:
+    image: dicom-flow-router:v1.0
+    container_name: dcm_retry
+    networks:
+      - site-a-net
+    extra_hosts:
+      - "pacs.site-b:10.50.0.2" # Manual DNS resolve over VPN
+    volumes: 
+      - ./router:/app/Working
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    cap_add: [NET_ADMIN]
+    entrypoint: >
+      sh -c "apt-get update && apt-get install -y iproute2 && 
+             ip route add 10.50.0.0/24 via 172.20.0.254 && 
+             tail -f /dev/null" 
+    # Just stays alive for the scheduler
+    environment:
+      - TZ=Europe/Budapest
+      - PYTHONUNBUFFERED=1
+    labels:
+      - "ofelia.enabled=true"
+      - "ofelia.job-exec.retry-job.schedule=@every 1m"
+      - "ofelia.job-exec.retry-job.command=python retry_sender.py --working-dir /app/Working"
+
+  scheduler:
+    image: mcuadros/ofelia:latest
+    container_name: dcm_scheduler
+    depends_on:
+      - dcm-retry
+    networks:
+      - site-a-net
+    environment:
+      - TZ=Europe/Budapest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    command: daemon --docker
+    restart: always
+
+  # --- THE FIREWALL / VPN GATEWAY ---
+  # This is the ONLY container with two network interfaces.
+  # It acts as the DNS forwarder and IP router.
+  vpn-gateway:
+    image: alpine
+    container_name: vpn_firewall
+    privileged: true 
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      site-a-net:
+        ipv4_address: 172.20.0.254 # Gateway: Fix IP
+      site-b-net:
+        ipv4_address: 10.50.0.254
+    command: >
+      sh -c "apk add --no-cache iptables && tail -f /dev/null"
+    restart: unless-stopped
+
+  # --- SITE-B (Remote LAN 10.50.0.0/24) ---
+  
+  pacs-remote-b:
+    build:
+      dockerfile: Dockerfile.orthanc
+    image: orthancwithrouting:v1.0
+    container_name: dcm_pacs_b
+    networks:
+      site-b-net:
+        ipv4_address: 10.50.0.2  # <--- FIX IP (used by: extra_hosts or config.ini)
+        aliases: [pacs.site-b]
+    cap_add: [NET_ADMIN]
+    ports:
+      - "8142:8042"
+    volumes: ["./orthanc/remote/orthanc.json:/etc/orthanc/orthanc.json:ro"]
+    entrypoint: >
+      sh -c "ip route add 172.20.0.0/24 via 10.50.0.254 && 
+             Orthanc /etc/orthanc/orthanc.json"
+
+    restart: unless-stopped
+
+networks:
+  site-a-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+  site-b-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.50.0.0/24

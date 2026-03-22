@@ -1,0 +1,9 @@
+{
+  "Name" : "SENDER_NODE",
+  "DicomAet" : "SENDER_AET",
+  "DicomModalities" : {
+    "router" : [ "ROUTER_AET", "dcm-router", 11112 ]
+  },
+  "RemoteAccessAllowed" : true,
+  "AuthenticationEnabled" : false
+}
